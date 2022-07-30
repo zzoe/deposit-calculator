@@ -1,10 +1,11 @@
+use std::cmp::min;
+
 use anyhow::{anyhow, bail, Result};
 use eframe::egui::{Color32, ComboBox, RichText, TextEdit, Widget};
 use eframe::{egui, Frame, Storage};
 use egui_extras::{Size, TableBuilder};
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy::{MidpointAwayFromZero, ToZero};
-use std::cmp::min;
 use time::{util, Date, Duration, Month};
 
 use config::{Config, Order, Product, RenewType, TermType};
@@ -50,10 +51,15 @@ impl eframe::App for App {
                         ui.heading("本金");
                         let mut principal = format!("{:.2}", order.principal);
                         if ui.text_edit_singleline(&mut principal).changed() {
-                            if let Ok(v) = principal.parse::<Decimal>() {
-                                order.principal = v.round_dp(2);
-                                for product in products.iter_mut() {
-                                    self.warn = calc(order, product);
+                            if let Ok(mut v) = principal.parse::<Decimal>() {
+                                v = v.round_dp_with_strategy(2, ToZero);
+                                if v >= Decimal::new(1000_0000_0000, 0) {
+                                    self.warn = Err(anyhow!("一千亿啊，土豪，还需要算吗？"))
+                                } else {
+                                    order.principal = v;
+                                    for product in products.iter_mut() {
+                                        self.warn = calc(order, product);
+                                    }
                                 }
                             }
                         };
@@ -162,18 +168,32 @@ impl eframe::App for App {
                             row.col(|ui| {
                                 let mut int_rate = format!("{:.2}", product.int_rate);
                                 if ui.text_edit_singleline(&mut int_rate).changed() {
-                                    if let Ok(v) = int_rate.parse::<Decimal>() {
-                                        product.int_rate = v.round_dp(2);
-                                        self.warn = calc(order, product);
+                                    if let Ok(mut v) = int_rate.parse::<Decimal>() {
+                                        v = v.round_dp_with_strategy(2, ToZero);
+                                        if v > Decimal::TEN {
+                                            self.warn = Err(anyhow!(
+                                                "哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"
+                                            ));
+                                        } else {
+                                            product.int_rate = v;
+                                            self.warn = calc(order, product);
+                                        }
                                     }
                                 };
                             });
                             row.col(|ui| {
                                 let mut bean_rate = format!("{:.2}", product.bean_rate);
                                 if ui.text_edit_singleline(&mut bean_rate).changed() {
-                                    if let Ok(v) = bean_rate.parse::<Decimal>() {
-                                        product.bean_rate = v.round_dp(2);
-                                        self.warn = calc(order, product);
+                                    if let Ok(mut v) = bean_rate.parse::<Decimal>() {
+                                        v = v.round_dp_with_strategy(2, ToZero);
+                                        if v > Decimal::TEN {
+                                            self.warn = Err(anyhow!(
+                                                "哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"
+                                            ));
+                                        } else {
+                                            product.bean_rate = v;
+                                            self.warn = calc(order, product);
+                                        }
                                     }
                                 };
                             });
@@ -266,7 +286,7 @@ fn calc(order: &mut Order, product: &mut Product) -> Result<()> {
         || order.draw_date > 99991231
         || order.save_date > order.draw_date
     {
-        bail!("日期设置有误!")
+        bail!("穿越时空？")
     }
 
     if product.term < 1 {
@@ -289,6 +309,9 @@ fn calc(order: &mut Order, product: &mut Product) -> Result<()> {
     .map_err(|e| anyhow!("支取日期有误!{e}"))?;
 
     order.days = (draw_date.to_julian_day() - save_date.to_julian_day()) as i32;
+    if order.days > 36500 {
+        bail!("你确定可以存一个世纪？")
+    }
 
     let year_days = Decimal::new(360, 0);
 
@@ -328,9 +351,9 @@ fn calc(order: &mut Order, product: &mut Product) -> Result<()> {
             (end_date.to_julian_day() - start_date.to_julian_day()) as i64,
             0,
         );
-        interest += (principal * days * int_rate / Decimal::ONE_HUNDRED / year_days)
+        interest += (days / year_days * int_rate / Decimal::ONE_HUNDRED * principal)
             .round_dp_with_strategy(2, MidpointAwayFromZero);
-        product.bean_int += (principal * days * bean_rate / Decimal::ONE_HUNDRED / year_days)
+        product.bean_int += (days / year_days * bean_rate / Decimal::ONE_HUNDRED * principal)
             .round_dp_with_strategy(2, ToZero);
 
         match product.renew_type {
