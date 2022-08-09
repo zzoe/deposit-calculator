@@ -15,108 +15,24 @@ impl Default for Config {
         Self {
             order: Order::default(),
             products: vec![
-                Product {
-                    term: 7,
-                    term_type: TermType::D,
-                    int_rate: Decimal::new(185, 2),
-                    bean_rate: Decimal::new(300, 2),
-                    renew_type: RenewType::P,
-                    ..Default::default()
-                },
-                Product {
-                    term: 7,
-                    term_type: TermType::D,
-                    int_rate: Decimal::new(185, 2),
-                    bean_rate: Decimal::new(300, 2),
-                    renew_type: RenewType::I,
-                    ..Default::default()
-                },
-                Product {
-                    term: 3,
-                    term_type: TermType::M,
-                    int_rate: Decimal::new(160, 2),
-                    bean_rate: Decimal::new(300, 2),
-                    renew_type: RenewType::P,
-                    ..Default::default()
-                },
-                Product {
-                    term: 3,
-                    term_type: TermType::M,
-                    int_rate: Decimal::new(160, 2),
-                    bean_rate: Decimal::new(300, 2),
-                    renew_type: RenewType::I,
-                    ..Default::default()
-                },
-                Product {
-                    term: 6,
-                    term_type: TermType::M,
-                    int_rate: Decimal::new(180, 2),
-                    bean_rate: Decimal::new(345, 2),
-                    renew_type: RenewType::P,
-                    ..Default::default()
-                },
-                Product {
-                    term: 6,
-                    term_type: TermType::M,
-                    int_rate: Decimal::new(180, 2),
-                    bean_rate: Decimal::new(345, 2),
-                    renew_type: RenewType::I,
-                    ..Default::default()
-                },
-                Product {
-                    term: 1,
-                    term_type: TermType::Y,
-                    int_rate: Decimal::new(200, 2),
-                    bean_rate: Decimal::new(345, 2),
-                    renew_type: RenewType::P,
-                    ..Default::default()
-                },
-                Product {
-                    term: 1,
-                    term_type: TermType::Y,
-                    int_rate: Decimal::new(200, 2),
-                    bean_rate: Decimal::new(345, 2),
-                    renew_type: RenewType::I,
-                    ..Default::default()
-                },
-                Product {
-                    term: 3,
-                    term_type: TermType::Y,
-                    int_rate: Decimal::new(315, 2),
-                    bean_rate: Decimal::new(200, 2),
-                    renew_type: RenewType::P,
-                    ..Default::default()
-                },
-                Product {
-                    term: 3,
-                    term_type: TermType::Y,
-                    int_rate: Decimal::new(315, 2),
-                    bean_rate: Decimal::new(200, 2),
-                    renew_type: RenewType::I,
-                    ..Default::default()
-                },
-                Product {
-                    term: 5,
-                    term_type: TermType::Y,
-                    int_rate: Decimal::new(365, 2),
-                    bean_rate: Decimal::new(200, 2),
-                    renew_type: RenewType::P,
-                    ..Default::default()
-                },
-                Product {
-                    term: 5,
-                    term_type: TermType::Y,
-                    int_rate: Decimal::new(365, 2),
-                    bean_rate: Decimal::new(200, 2),
-                    renew_type: RenewType::I,
-                    ..Default::default()
-                },
+                Product::new(7, TermType::D, 185, 300, RenewType::P),
+                Product::new(7, TermType::D, 185, 300, RenewType::I),
+                Product::new(3, TermType::M, 160, 300, RenewType::P),
+                Product::new(3, TermType::M, 160, 300, RenewType::I),
+                Product::new(6, TermType::M, 180, 345, RenewType::P),
+                Product::new(6, TermType::M, 180, 345, RenewType::I),
+                Product::new(1, TermType::Y, 200, 345, RenewType::P),
+                Product::new(1, TermType::Y, 200, 345, RenewType::I),
+                Product::new(3, TermType::Y, 315, 200, RenewType::P),
+                Product::new(3, TermType::Y, 315, 200, RenewType::I),
+                Product::new(5, TermType::Y, 365, 200, RenewType::P),
+                Product::new(5, TermType::Y, 365, 200, RenewType::I),
             ],
         }
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub principal: Decimal,
     pub save_date: u32,
@@ -149,6 +65,25 @@ pub struct Product {
     pub renew_type: RenewType,
     pub interest: Decimal,
     pub bean_int: Decimal,
+}
+
+impl Product {
+    fn new(
+        term: u8,
+        term_type: TermType,
+        int_rate: i64,
+        bean_rate: i64,
+        renew_type: RenewType,
+    ) -> Self {
+        Product {
+            term,
+            term_type,
+            int_rate: Decimal::new(int_rate, 2),
+            bean_rate: Decimal::new(bean_rate, 2),
+            renew_type,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, PartialEq)]

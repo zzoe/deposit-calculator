@@ -2,10 +2,10 @@ use anyhow::{anyhow, Result};
 use eframe::egui::{Color32, ComboBox, RichText, TextEdit, Widget};
 use eframe::{egui, Frame, Storage};
 use egui_extras::{Size, TableBuilder};
+use rayon::prelude::*;
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy::ToZero;
 
-use calculator::Calculator;
 use config::{Config, Product, RenewType, TermType};
 
 mod calculator;
@@ -14,7 +14,6 @@ mod config;
 pub struct App {
     cfg: Config,
     warn: Result<()>,
-    cal: Calculator,
 }
 
 impl Default for App {
@@ -22,15 +21,12 @@ impl Default for App {
         Self {
             cfg: Config::default(),
             warn: Ok(()),
-            cal: Calculator::default(),
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        let Config { order, products } = &mut self.cfg;
-
         if let Err(e) = &self.warn {
             egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
                 let warn = RichText::from(e.to_string()).color(Color32::RED);
@@ -50,17 +46,15 @@ impl eframe::App for App {
                 .header(text_height, |mut header| {
                     header.col(|ui| {
                         ui.heading("本金");
-                        let mut principal = format!("{:.2}", order.principal);
+                        let mut principal = format!("{:.2}", self.cfg.order.principal);
                         if ui.text_edit_singleline(&mut principal).changed() {
                             if let Ok(mut v) = principal.parse::<Decimal>() {
                                 v = v.round_dp_with_strategy(2, ToZero);
                                 if v >= Decimal::new(1000_0000_0000, 0) {
                                     self.warn = Err(anyhow!("一千亿啊，土豪，还需要算吗？"))
                                 } else {
-                                    order.principal = v;
-                                    for product in products.iter_mut() {
-                                        self.warn = self.cal.calc(order, product);
-                                    }
+                                    self.cfg.order.principal = v;
+                                    self.calc(None);
                                 }
                             }
                         };
@@ -68,34 +62,30 @@ impl eframe::App for App {
 
                     header.col(|ui| {
                         ui.heading("购买日期：");
-                        let mut save_date = order.save_date.to_string();
+                        let mut save_date = self.cfg.order.save_date.to_string();
                         if ui.text_edit_singleline(&mut save_date).changed() {
                             save_date.truncate(8);
                             if let Ok(v) = save_date.parse() {
-                                order.save_date = v;
-                                for product in products.iter_mut() {
-                                    self.warn = self.cal.calc(order, product);
-                                }
+                                self.cfg.order.save_date = v;
+                                self.calc(None);
                             }
                         }
                     });
 
                     header.col(|ui| {
                         ui.heading("支取日期：");
-                        let mut draw_date = order.draw_date.to_string();
+                        let mut draw_date = self.cfg.order.draw_date.to_string();
                         if ui.text_edit_singleline(&mut draw_date).changed() {
                             draw_date.truncate(8);
                             if let Ok(v) = draw_date.parse() {
-                                order.draw_date = v;
-                                for product in products.iter_mut() {
-                                    self.warn = self.cal.calc(order, product);
-                                }
+                                self.cfg.order.draw_date = v;
+                                self.calc(None);
                             }
                         }
                     });
 
                     header.col(|ui| {
-                        ui.heading(format!("天数：{}", order.days));
+                        ui.heading(format!("天数：{}", self.cfg.order.days));
                     });
                 });
 
@@ -132,28 +122,34 @@ impl eframe::App for App {
                     });
                     header.col(|ui| {
                         if ui.button("添加").clicked() {
-                            products.push(Product::default());
+                            self.cfg.products.push(Product::default());
                         }
                     });
                 })
                 .body(|body| {
-                    body.rows(text_height, products.len(), |row_index, mut row| {
-                        if let Some(product) = products.get_mut(row_index) {
+                    body.rows(
+                        text_height,
+                        self.cfg.products.len(),
+                        |row_index, mut row| {
+                            if self.cfg.products.get_mut(row_index).is_none() {
+                                return;
+                            }
                             row.col(|ui| {
                                 ui.horizontal(|ui| {
-                                    let mut term = product.term.to_string();
+                                    let mut term = self.cfg.products[row_index].term.to_string();
                                     if TextEdit::singleline(&mut term)
                                         .desired_width(20.0)
                                         .ui(ui)
                                         .changed()
                                     {
                                         if let Ok(v) = term.parse() {
-                                            product.term = v;
-                                            self.warn = self.cal.calc(order, product);
+                                            self.cfg.products[row_index].term = v;
+                                            self.calc(Some(row_index));
                                         }
                                     }
 
-                                    let mut selected = product.term_type as usize;
+                                    let mut selected =
+                                        self.cfg.products[row_index].term_type as usize;
                                     if ComboBox::from_id_source(format!("存期类型{}", row_index))
                                         .width(20.0)
                                         .show_index(ui, &mut selected, 3, |i| {
@@ -161,13 +157,15 @@ impl eframe::App for App {
                                         })
                                         .changed()
                                     {
-                                        product.term_type = TermType::from(selected);
-                                        self.warn = self.cal.calc(order, product);
+                                        self.cfg.products[row_index].term_type =
+                                            TermType::from(selected);
+                                        self.calc(Some(row_index));
                                     };
                                 });
                             });
                             row.col(|ui| {
-                                let mut int_rate = format!("{:.2}", product.int_rate);
+                                let mut int_rate =
+                                    format!("{:.2}", self.cfg.products[row_index].int_rate);
                                 if ui.text_edit_singleline(&mut int_rate).changed() {
                                     if let Ok(mut v) = int_rate.parse::<Decimal>() {
                                         v = v.round_dp_with_strategy(2, ToZero);
@@ -176,14 +174,15 @@ impl eframe::App for App {
                                                 "哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"
                                             ));
                                         } else {
-                                            product.int_rate = v;
-                                            self.warn = self.cal.calc(order, product);
+                                            self.cfg.products[row_index].int_rate = v;
+                                            self.calc(Some(row_index));
                                         }
                                     }
                                 };
                             });
                             row.col(|ui| {
-                                let mut bean_rate = format!("{:.2}", product.bean_rate);
+                                let mut bean_rate =
+                                    format!("{:.2}", self.cfg.products[row_index].bean_rate);
                                 if ui.text_edit_singleline(&mut bean_rate).changed() {
                                     if let Ok(mut v) = bean_rate.parse::<Decimal>() {
                                         v = v.round_dp_with_strategy(2, ToZero);
@@ -192,14 +191,14 @@ impl eframe::App for App {
                                                 "哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"
                                             ));
                                         } else {
-                                            product.bean_rate = v;
-                                            self.warn = self.cal.calc(order, product);
+                                            self.cfg.products[row_index].bean_rate = v;
+                                            self.calc(Some(row_index));
                                         }
                                     }
                                 };
                             });
                             row.col(|ui| {
-                                let mut selected = product.renew_type as usize;
+                                let mut selected = self.cfg.products[row_index].renew_type as usize;
                                 if ComboBox::from_id_source(format!("续存方式{}", row_index))
                                     .width(80.0)
                                     .show_index(ui, &mut selected, 3, |i| {
@@ -207,23 +206,24 @@ impl eframe::App for App {
                                     })
                                     .changed()
                                 {
-                                    product.renew_type = RenewType::from(selected);
-                                    self.warn = self.cal.calc(order, product);
+                                    self.cfg.products[row_index].renew_type =
+                                        RenewType::from(selected);
+                                    self.calc(Some(row_index));
                                 };
                             });
                             row.col(|ui| {
-                                ui.label(format!("{:.2}", product.interest));
+                                ui.label(format!("{:.2}", self.cfg.products[row_index].interest));
                             });
                             row.col(|ui| {
-                                ui.label(format!("{:.2}", product.bean_int));
+                                ui.label(format!("{:.2}", self.cfg.products[row_index].bean_int));
                             });
                             row.col(|ui| {
                                 if ui.button("删除").clicked() {
-                                    products.remove(row_index);
+                                    self.cfg.products.remove(row_index);
                                 }
                             });
-                        }
-                    });
+                        },
+                    );
                 });
         });
 
@@ -250,6 +250,25 @@ impl App {
                 ..Default::default()
             })
             .unwrap_or_default()
+    }
+
+    fn calc(&mut self, index: Option<usize>) {
+        self.warn = calculator::check_date(&mut self.cfg.order);
+
+        if self.warn.is_ok() {
+            let order = &self.cfg.order;
+
+            if let Some(i) = index {
+                if let Some(product) = self.cfg.products.get_mut(i) {
+                    calculator::calc(order, product);
+                    return;
+                }
+            }
+
+            self.cfg.products.par_iter_mut().for_each(|product| {
+                calculator::calc(order, product);
+            });
+        }
     }
 }
 
