@@ -1,6 +1,6 @@
 [package]
 name = "deposit-calculator"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,3 +13,5 @@ serde = { version = "*" }
 time = { version = "*" }
 rust_decimal = { version = "*" }
 rayon = { version = "*" }
+futures = { version = "*", features = ["executor", "thread-pool"] }
+async-channel = { version = "*" }

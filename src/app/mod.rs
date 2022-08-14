@@ -1,12 +1,18 @@
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Result};
+use async_channel::{Receiver, Sender};
 use eframe::egui::{Color32, ComboBox, RichText, TextEdit, Widget};
 use eframe::{egui, Frame, Storage};
 use egui_extras::{Size, TableBuilder};
+use futures::executor::ThreadPoolBuilder;
 use rayon::prelude::*;
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy::ToZero;
 
 use config::{Config, Product, RenewType, TermType};
+
+use crate::app::calculator::Req;
 
 mod calculator;
 mod config;
@@ -14,19 +20,16 @@ mod config;
 pub struct App {
     cfg: Config,
     warn: Result<()>,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            cfg: Config::default(),
-            warn: Ok(()),
-        }
-    }
+    // worker: ThreadPool,
+    req_s: Sender<Req>,
+    res_r: Receiver<HashMap<Req, (Decimal, Decimal)>>,
+    cache: HashMap<Req, (Decimal, Decimal)>,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.refresh_cache();
+
         if let Err(e) = &self.warn {
             egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
                 let warn = RichText::from(e.to_string()).color(Color32::RED);
@@ -48,15 +51,7 @@ impl eframe::App for App {
                         ui.heading("本金");
                         let mut principal = format!("{:.2}", self.cfg.order.principal);
                         if ui.text_edit_singleline(&mut principal).changed() {
-                            if let Ok(mut v) = principal.parse::<Decimal>() {
-                                v = v.round_dp_with_strategy(2, ToZero);
-                                if v >= Decimal::new(1000_0000_0000, 0) {
-                                    self.warn = Err(anyhow!("一千亿啊，土豪，还需要算吗？"))
-                                } else {
-                                    self.cfg.order.principal = v;
-                                    self.calc(None);
-                                }
-                            }
+                            self.principal_changed(&*principal);
                         };
                     });
 
@@ -65,10 +60,7 @@ impl eframe::App for App {
                         let mut save_date = self.cfg.order.save_date.to_string();
                         if ui.text_edit_singleline(&mut save_date).changed() {
                             save_date.truncate(8);
-                            if let Ok(v) = save_date.parse() {
-                                self.cfg.order.save_date = v;
-                                self.calc(None);
-                            }
+                            self.save_date_changed(&*save_date);
                         }
                     });
 
@@ -77,10 +69,7 @@ impl eframe::App for App {
                         let mut draw_date = self.cfg.order.draw_date.to_string();
                         if ui.text_edit_singleline(&mut draw_date).changed() {
                             draw_date.truncate(8);
-                            if let Ok(v) = draw_date.parse() {
-                                self.cfg.order.draw_date = v;
-                                self.calc(None);
-                            }
+                            self.draw_date_changed(&*draw_date);
                         }
                     });
 
@@ -142,24 +131,19 @@ impl eframe::App for App {
                                         .ui(ui)
                                         .changed()
                                     {
-                                        if let Ok(v) = term.parse() {
-                                            self.cfg.products[row_index].term = v;
-                                            self.calc(Some(row_index));
-                                        }
+                                        self.term_changed(&*term, row_index);
                                     }
 
-                                    let mut selected =
+                                    let mut term_type =
                                         self.cfg.products[row_index].term_type as usize;
                                     if ComboBox::from_id_source(format!("存期类型{}", row_index))
                                         .width(20.0)
-                                        .show_index(ui, &mut selected, 3, |i| {
+                                        .show_index(ui, &mut term_type, 3, |i| {
                                             TermType::from(i).to_string()
                                         })
                                         .changed()
                                     {
-                                        self.cfg.products[row_index].term_type =
-                                            TermType::from(selected);
-                                        self.calc(Some(row_index));
+                                        self.term_type_changed(term_type, row_index);
                                     };
                                 });
                             });
@@ -167,48 +151,27 @@ impl eframe::App for App {
                                 let mut int_rate =
                                     format!("{:.2}", self.cfg.products[row_index].int_rate);
                                 if ui.text_edit_singleline(&mut int_rate).changed() {
-                                    if let Ok(mut v) = int_rate.parse::<Decimal>() {
-                                        v = v.round_dp_with_strategy(2, ToZero);
-                                        if v > Decimal::TEN {
-                                            self.warn = Err(anyhow!(
-                                                "哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"
-                                            ));
-                                        } else {
-                                            self.cfg.products[row_index].int_rate = v;
-                                            self.calc(Some(row_index));
-                                        }
-                                    }
+                                    self.int_rate_changed(&*int_rate, row_index);
                                 };
                             });
                             row.col(|ui| {
                                 let mut bean_rate =
                                     format!("{:.2}", self.cfg.products[row_index].bean_rate);
                                 if ui.text_edit_singleline(&mut bean_rate).changed() {
-                                    if let Ok(mut v) = bean_rate.parse::<Decimal>() {
-                                        v = v.round_dp_with_strategy(2, ToZero);
-                                        if v > Decimal::TEN {
-                                            self.warn = Err(anyhow!(
-                                                "哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"
-                                            ));
-                                        } else {
-                                            self.cfg.products[row_index].bean_rate = v;
-                                            self.calc(Some(row_index));
-                                        }
-                                    }
+                                    self.bean_rate_changed(&*bean_rate, row_index);
                                 };
                             });
                             row.col(|ui| {
-                                let mut selected = self.cfg.products[row_index].renew_type as usize;
+                                let mut renew_type =
+                                    self.cfg.products[row_index].renew_type as usize;
                                 if ComboBox::from_id_source(format!("续存方式{}", row_index))
                                     .width(80.0)
-                                    .show_index(ui, &mut selected, 3, |i| {
+                                    .show_index(ui, &mut renew_type, 3, |i| {
                                         RenewType::from(i).to_string()
                                     })
                                     .changed()
                                 {
-                                    self.cfg.products[row_index].renew_type =
-                                        RenewType::from(selected);
-                                    self.calc(Some(row_index));
+                                    self.renew_type_changed(renew_type, row_index);
                                 };
                             });
                             row.col(|ui| {
@@ -239,17 +202,68 @@ impl eframe::App for App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        setup_custom_fonts(&cc.egui_ctx);
-        // cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        // cc.egui_ctx.set_debug_on_hover(true);
+        let egui_ctx = cc.egui_ctx.clone();
+        setup_custom_fonts(&egui_ctx);
+        // egui_ctx.set_visuals(egui::Visuals::dark());
+        // egui_ctx.set_debug_on_hover(true);
 
-        cc.storage
+        let cfg = cc
+            .storage
             .and_then(|storage| eframe::get_value::<Config>(storage, eframe::APP_KEY))
-            .map(|cfg| Self {
-                cfg,
-                ..Default::default()
+            .unwrap_or_default();
+
+        let worker = ThreadPoolBuilder::new().pool_size(1).create().unwrap();
+
+        //req 需要计算的key (本金-购买日期-支取日期-产品存期-存期类型-利率-邦豆利率-滚存类型)
+        let (req_s, req_r) = async_channel::unbounded::<Req>();
+        //res 计算结果HashMap<key,value> ()
+        let (res_s, res_r) = async_channel::unbounded::<HashMap<Req, (Decimal, Decimal)>>();
+
+        worker.spawn_ok(async move {
+            while let Ok(req) = req_r.recv().await {
+                let mut reqs = HashMap::new();
+                reqs.insert(req, (Decimal::ZERO, Decimal::ZERO));
+
+                while let Ok(req_more) = req_r.try_recv() {
+                    reqs.insert(req_more, (Decimal::ZERO, Decimal::ZERO));
+                }
+
+                reqs.par_iter_mut()
+                    .for_each(|(req, res)| *res = calculator::calc(req));
+
+                res_s.send(reqs).await.ok();
+                egui_ctx.request_repaint();
+            }
+        });
+
+        let mut cache = HashMap::new();
+        cfg.products.iter().for_each(|p| {
+            cache.insert(Req::new(&cfg.order, p), (p.interest, p.bean_int));
+        });
+
+        Self {
+            cfg,
+            warn: Ok(()),
+            // worker,
+            req_s,
+            res_r,
+            cache,
+        }
+    }
+
+    fn refresh_cache(&mut self) {
+        while let Ok(res) = self.res_r.try_recv() {
+            res.iter().for_each(|(k, v)| {
+                self.cache.insert(*k, *v);
             })
-            .unwrap_or_default()
+        }
+
+        self.cfg.products.iter_mut().for_each(|p| {
+            if let Some(res) = self.cache.get(&Req::new(&self.cfg.order, p)) {
+                p.interest = res.0;
+                p.bean_int = res.1;
+            }
+        })
     }
 
     fn calc(&mut self, index: Option<usize>) {
@@ -257,18 +271,91 @@ impl App {
 
         if self.warn.is_ok() {
             let order = &self.cfg.order;
+            self.cfg
+                .products
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, product)| {
+                    if index.is_some() && index.ne(&Some(i)) {
+                        return;
+                    }
 
-            if let Some(i) = index {
-                if let Some(product) = self.cfg.products.get_mut(i) {
-                    calculator::calc(order, product);
-                    return;
-                }
-            }
-
-            self.cfg.products.par_iter_mut().for_each(|product| {
-                calculator::calc(order, product);
-            });
+                    let req = Req::new(order, product);
+                    if let Some(res) = self.cache.get(&req) {
+                        product.interest = res.0;
+                        product.bean_int = res.1;
+                    } else {
+                        self.req_s.send_blocking(req).unwrap();
+                    }
+                });
         }
+    }
+
+    fn principal_changed(&mut self, principal: &str) {
+        if let Ok(mut v) = principal.parse::<Decimal>() {
+            v = v.round_dp_with_strategy(2, ToZero);
+            if v >= Decimal::new(1000_0000_0000, 0) {
+                self.warn = Err(anyhow!("一千亿啊，土豪，还需要算吗？"))
+            } else {
+                self.cfg.order.principal = v;
+                self.calc(None);
+            }
+        }
+    }
+
+    fn save_date_changed(&mut self, save_date: &str) {
+        if let Ok(v) = save_date.parse() {
+            self.cfg.order.save_date = v;
+            self.calc(None);
+        }
+    }
+
+    fn draw_date_changed(&mut self, draw_date: &str) {
+        if let Ok(v) = draw_date.parse() {
+            self.cfg.order.draw_date = v;
+            self.calc(None);
+        }
+    }
+
+    fn term_changed(&mut self, term: &str, row_index: usize) {
+        if let Ok(v) = term.parse() {
+            self.cfg.products[row_index].term = v;
+            self.calc(Some(row_index));
+        }
+    }
+
+    fn term_type_changed(&mut self, term_type: usize, row_index: usize) {
+        self.cfg.products[row_index].term_type = TermType::from(term_type);
+        self.calc(Some(row_index));
+    }
+
+    fn int_rate_changed(&mut self, int_rate: &str, row_index: usize) {
+        if let Ok(mut v) = int_rate.parse::<Decimal>() {
+            v = v.round_dp_with_strategy(2, ToZero);
+            if v > Decimal::TEN {
+                self.warn = Err(anyhow!("哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"));
+            } else {
+                self.cfg.products[row_index].int_rate = v;
+                self.calc(Some(row_index));
+            }
+        }
+    }
+
+    fn bean_rate_changed(&mut self, bean_rate: &str, row_index: usize) {
+        if let Ok(mut v) = bean_rate.parse::<Decimal>() {
+            v = v.round_dp_with_strategy(2, ToZero);
+            if v > Decimal::TEN {
+                self.warn = Err(anyhow!("哪里有这么高的利率，苟富贵勿相忘啊，兄弟！"));
+            } else {
+                self.cfg.products[row_index].bean_rate = v;
+                self.calc(Some(row_index));
+            }
+        }
+    }
+
+    fn renew_type_changed(&mut self, renew_type: usize, row_index: usize) {
+        self.cfg.products[row_index].renew_type = RenewType::from(renew_type);
+        self.calc(Some(row_index));
     }
 }
 
