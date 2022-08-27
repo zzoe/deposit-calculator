@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use async_channel::{Receiver, Sender};
-use eframe::egui::{Color32, ComboBox, RichText, TextEdit, Widget};
+use eframe::egui::{Align, Color32, ComboBox, RichText, TextEdit, Widget};
 use eframe::{egui, Frame, Storage};
 use egui_extras::{Size, TableBuilder};
 use futures::executor::ThreadPoolBuilder;
@@ -41,7 +41,7 @@ impl eframe::App for App {
             let text_height = egui::TextStyle::Body.resolve(ui.style()).size * 2.0;
 
             TableBuilder::new(ui)
-                .cell_layout(egui::Layout::left_to_right())
+                .cell_layout(egui::Layout::left_to_right(Align::Center))
                 .column(Size::remainder())
                 .column(Size::remainder())
                 .column(Size::remainder())
@@ -82,7 +82,7 @@ impl eframe::App for App {
 
             TableBuilder::new(ui)
                 .striped(true)
-                .cell_layout(egui::Layout::left_to_right())
+                .cell_layout(egui::Layout::left_to_right(Align::Center))
                 .column(Size::initial(80.0))
                 .column(Size::remainder())
                 .column(Size::remainder())
